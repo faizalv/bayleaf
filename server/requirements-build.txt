@@ -1,6 +1,5 @@
 torch
 transformers
-sentence-transformers
 onnxscript
 onnxruntime
 tokenizers

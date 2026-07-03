@@ -92,7 +92,6 @@ if [ ! -f "${BUILD_VENV_DIR}/bin/python" ]; then
     "${BUILD_VENV_DIR}/bin/pip" install --extra-index-url https://download.pytorch.org/whl/cpu \
         torch \
         transformers \
-        sentence-transformers \
         onnxscript \
         onnxruntime \
         tokenizers \

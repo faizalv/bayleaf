@@ -21,6 +21,5 @@ build-clean:
 
 export-model:
 	pip install --extra-index-url https://download.pytorch.org/whl/cpu \
-		-r server/requirements-build.txt \
-		-r server/requirements.txt
+		-r server/requirements-build.txt
 	python server/export_onnx.py models
