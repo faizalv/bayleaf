@@ -1,6 +1,6 @@
 """Export intfloat/e5-base to ONNX format.
 
-Requires build-time dependencies: torch, optimum[exporters], sentence-transformers.
+Requires build-time dependencies: torch, transformers, sentence-transformers.
 These are NOT shipped in the runtime tarball.
 
 Usage:
@@ -11,31 +11,77 @@ Produces:
     <output_dir>/tokenizer.json
 """
 
+import subprocess
 import sys
 from pathlib import Path
+
+import numpy as np
 
 MODEL_NAME = "intfloat/e5-base"
 
 
 def export(output_dir: Path):
-    from optimum.exporters.onnx import main_export
+    import torch
+    from transformers import AutoModel, AutoTokenizer
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    main_export(MODEL_NAME, output=output_dir, task="feature-extraction")
 
-    keep = {"model.onnx", "tokenizer.json"}
+    print(f"Loading {MODEL_NAME}...")
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModel.from_pretrained(MODEL_NAME)
+    model.eval()
+
+    # Wrapper so the ONNX graph has explicit named inputs/outputs
+    # without the ModelOutput wrapper that BERT normally returns.
+    class BertEmbedWrapper(torch.nn.Module):
+        def __init__(self, m):
+            super().__init__()
+            self.m = m
+
+        def forward(self, input_ids, attention_mask, token_type_ids):
+            return self.m(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                token_type_ids=token_type_ids,
+            ).last_hidden_state
+
+    wrapped = BertEmbedWrapper(model)
+
+    dummy = tokenizer("warmup", return_tensors="pt", padding="max_length", max_length=16)
+
+    print("Exporting to ONNX...")
+    with torch.no_grad():
+        torch.onnx.export(
+            wrapped,
+            (dummy["input_ids"], dummy["attention_mask"], dummy["token_type_ids"]),
+            str(output_dir / "model.onnx"),
+            input_names=["input_ids", "attention_mask", "token_type_ids"],
+            output_names=["last_hidden_state"],
+            dynamic_axes={
+                "input_ids":       {0: "batch", 1: "sequence"},
+                "attention_mask":  {0: "batch", 1: "sequence"},
+                "token_type_ids":  {0: "batch", 1: "sequence"},
+                "last_hidden_state": {0: "batch", 1: "sequence"},
+            },
+            opset_version=17,
+        )
+
+    # Save tokenizer.json then discard everything else save_pretrained writes.
+    # Keep model.onnx, model.onnx.data (external weights, present when model > 2GB
+    # protobuf limit), and tokenizer.json.
+    tokenizer.save_pretrained(str(output_dir))
     for f in output_dir.iterdir():
-        if f.name not in keep:
+        if f.is_file() and f.name != "tokenizer.json" and f.suffix != ".onnx" and not f.name.endswith(".onnx.data"):
             f.unlink()
 
+    model_size = sum(f.stat().st_size for f in output_dir.iterdir() if f.suffix == ".onnx" or f.name.endswith(".onnx.data"))
     print(f"Exported {MODEL_NAME} to {output_dir}")
-    print(f"  model.onnx:     {(output_dir / 'model.onnx').stat().st_size / 1e6:.1f} MB")
+    print(f"  model (total):  {model_size / 1e6:.1f} MB")
     print(f"  tokenizer.json: {(output_dir / 'tokenizer.json').stat().st_size / 1e3:.1f} KB")
 
 
 def verify(output_dir: Path):
-    """Compare ONNX output against sentence-transformers on reference texts."""
-    import numpy as np
+    """Compare ONNX pipeline output against sentence-transformers on reference texts."""
     import onnxruntime as ort
     from sentence_transformers import SentenceTransformer
     from tokenizers import Tokenizer
@@ -57,6 +103,7 @@ def verify(output_dir: Path):
     tokenizer.enable_padding(pad_id=0, pad_token="[PAD]", length=None)
     session = ort.InferenceSession(str(output_dir / "model.onnx"))
 
+    all_pass = True
     for i, text in enumerate(reference_texts):
         encoded = tokenizer.encode(text)
         input_ids = np.array([encoded.ids], dtype=np.int64)
@@ -77,15 +124,18 @@ def verify(output_dir: Path):
         norm = np.linalg.norm(mean_pooled, axis=1, keepdims=True)
         onnx_vec = (mean_pooled / np.maximum(norm, 1e-9))[0]
 
-        cosine_sim = np.dot(onnx_vec, st_embeddings[i]) / (
+        cosine_sim = float(np.dot(onnx_vec, st_embeddings[i]) / (
             np.linalg.norm(onnx_vec) * np.linalg.norm(st_embeddings[i])
-        )
+        ))
         status = "PASS" if cosine_sim > 0.999 else "FAIL"
-        print(f"  [{status}] text {i}: cosine_sim={cosine_sim:.6f}")
+        print(f"  [{status}] text {i}: cosine_sim={cosine_sim:.6f}  {text[:50]}")
 
         if cosine_sim <= 0.999:
-            print(f"    WARNING: cosine similarity below threshold for: {text[:50]}...")
-            sys.exit(1)
+            all_pass = False
+
+    if not all_pass:
+        print("\nFAIL: some vectors did not match")
+        sys.exit(1)
 
     print("\nAll vectors match (cosine similarity > 0.999)")
 

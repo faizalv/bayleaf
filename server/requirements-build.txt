@@ -1,3 +1,7 @@
 torch
-optimum[exporters]
+transformers
 sentence-transformers
+onnxscript
+onnxruntime
+tokenizers
+numpy

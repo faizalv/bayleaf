@@ -1,4 +1,4 @@
-.PHONY: test test-integration test-all vet build export-model
+.PHONY: test test-integration test-all vet build build-clean export-model
 
 test:
 	go test -v -count=1 ./...
@@ -14,6 +14,13 @@ vet:
 build:
 	bash build/build.sh
 
+# Wipe the build cache and rebuild from scratch.
+build-clean:
+	rm -rf ~/.bayleaf/build-cache
+	bash build/build.sh
+
 export-model:
-	pip install -r server/requirements-build.txt -r server/requirements.txt
+	pip install --extra-index-url https://download.pytorch.org/whl/cpu \
+		-r server/requirements-build.txt \
+		-r server/requirements.txt
 	python server/export_onnx.py models

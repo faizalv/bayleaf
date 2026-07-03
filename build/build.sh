@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PYTHON_BUILD_STANDALONE_TAG="${PYTHON_BUILD_STANDALONE_TAG:-20250612}"
-PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
+PYTHON_MINOR="${PYTHON_MINOR:-3.12}"
 OUTPUT_DIR="${OUTPUT_DIR:-$(pwd)/dist}"
+
+# Persistent cache -- survives between runs so we don't re-download gigabytes.
+BUILD_CACHE="${BUILD_CACHE:-${HOME}/.bayleaf/build-cache}"
+PBS_CACHE="${BUILD_CACHE}/pbs"
+BUILD_VENV_DIR="${BUILD_CACHE}/build-venv"
 
 WORKDIR="$(mktemp -d)"
 STAGING="${WORKDIR}/staging"
@@ -28,16 +32,34 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 
 echo "==> Building bayleaf runtime for ${PLATFORM}"
+echo "    Build cache: ${BUILD_CACHE}"
 
-# --- Portable Python ---
+# --- Portable Python (cached) ---
 
-PBS_URL="https://github.com/indygreg/python-build-standalone/releases/download/${PYTHON_BUILD_STANDALONE_TAG}/cpython-${PYTHON_VERSION}+${PYTHON_BUILD_STANDALONE_TAG}-${PBS_ARCH}-${PBS_OS}-install_only.tar.gz"
+mkdir -p "${PBS_CACHE}"
+PBS_TARBALL="${PBS_CACHE}/python-${PYTHON_MINOR}-${PLATFORM}.tar.gz"
 
-echo "==> Downloading python-build-standalone"
-curl -fSL -o "${WORKDIR}/python.tar.gz" "${PBS_URL}"
+if [ ! -f "${PBS_TARBALL}" ]; then
+    echo "==> Resolving python-build-standalone release"
+    PBS_API="https://api.github.com/repos/indygreg/python-build-standalone/releases/latest"
+    PBS_URL="$(curl -fsSL "${PBS_API}" | python3 -c "
+import sys, json, re
+assets = json.load(sys.stdin)['assets']
+pattern = re.compile(r'cpython-${PYTHON_MINOR}\.\d+\+\d+-${PBS_ARCH}-${PBS_OS}-install_only\.tar\.gz$')
+matches = [a['browser_download_url'] for a in assets if pattern.match(a['name'])]
+if not matches:
+    print('ERROR: no matching asset found', file=sys.stderr)
+    sys.exit(1)
+print(matches[0])
+")"
+    echo "==> Downloading $(basename "${PBS_URL}")"
+    curl -fSL -o "${PBS_TARBALL}" "${PBS_URL}"
+else
+    echo "==> Using cached python-build-standalone (${PBS_TARBALL})"
+fi
 
 mkdir -p "${STAGING}"
-tar xf "${WORKDIR}/python.tar.gz" -C "${STAGING}"
+tar xf "${PBS_TARBALL}" -C "${STAGING}"
 
 PYTHON="${STAGING}/python/bin/python3"
 if [ ! -f "$PYTHON" ]; then
@@ -47,9 +69,9 @@ fi
 
 echo "==> Python: $("${PYTHON}" --version)"
 
-# --- Virtualenv + dependencies ---
+# --- Runtime virtualenv (goes into the tarball) ---
 
-echo "==> Creating virtualenv"
+echo "==> Creating runtime virtualenv"
 "${PYTHON}" -m venv "${STAGING}/venv"
 VENV_PIP="${STAGING}/venv/bin/pip"
 
@@ -62,18 +84,28 @@ echo "==> Installing runtime dependencies"
     fastapi \
     "uvicorn[standard]"
 
+# --- Build virtualenv (cached, not shipped in tarball) ---
+
+if [ ! -f "${BUILD_VENV_DIR}/bin/python" ]; then
+    echo "==> Creating build virtualenv (cached at ${BUILD_VENV_DIR})"
+    python3 -m venv "${BUILD_VENV_DIR}"
+    "${BUILD_VENV_DIR}/bin/pip" install --extra-index-url https://download.pytorch.org/whl/cpu \
+        torch \
+        transformers \
+        sentence-transformers \
+        onnxscript \
+        onnxruntime \
+        tokenizers \
+        numpy
+else
+    echo "==> Using cached build virtualenv"
+fi
+
 # --- ONNX model export ---
 
 echo "==> Exporting E5-base to ONNX"
-BUILD_VENV="${WORKDIR}/build-venv"
-"${PYTHON}" -m venv "${BUILD_VENV}"
-"${BUILD_VENV}/bin/pip" install --no-cache-dir \
-    torch --index-url https://download.pytorch.org/whl/cpu \
-    "optimum[exporters]" \
-    sentence-transformers
-
 mkdir -p "${STAGING}/models"
-"${BUILD_VENV}/bin/python" "${REPO_DIR}/server/export_onnx.py" "${STAGING}/models"
+"${BUILD_VENV_DIR}/bin/python" "${REPO_DIR}/server/export_onnx.py" "${STAGING}/models"
 
 # --- Server code ---
 
