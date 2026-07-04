@@ -42,7 +42,11 @@ PBS_TARBALL="${PBS_CACHE}/python-${PYTHON_MINOR}-${PLATFORM}.tar.gz"
 if [ ! -f "${PBS_TARBALL}" ]; then
     echo "==> Resolving python-build-standalone release"
     PBS_API="https://api.github.com/repos/indygreg/python-build-standalone/releases/latest"
-    PBS_URL="$(curl -fsSL "${PBS_API}" | python3 -c "
+    PBS_AUTH_HEADER=""
+    if [ -n "${GITHUB_TOKEN:-}" ]; then
+        PBS_AUTH_HEADER="Authorization: token ${GITHUB_TOKEN}"
+    fi
+    PBS_URL="$(curl -fsSL ${PBS_AUTH_HEADER:+-H "${PBS_AUTH_HEADER}"} "${PBS_API}" | python3 -c "
 import sys, json, re
 assets = json.load(sys.stdin)['assets']
 pattern = re.compile(r'cpython-${PYTHON_MINOR}\.\d+\+\d+-${PBS_ARCH}-${PBS_OS}-install_only\.tar\.gz$')

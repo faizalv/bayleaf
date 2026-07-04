@@ -31,6 +31,7 @@ jobs:
         run: bash build/build.sh
         env:
           OUTPUT_DIR: ${{ github.workspace }}/dist
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v5
