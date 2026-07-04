@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const ReleaseTag = "v0.1.0"
+const ReleaseTag = "v0.1.3"
 
 const DefaultModel = "intfloat/e5-base"
 

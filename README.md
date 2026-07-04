@@ -79,11 +79,12 @@ Convert requests never pay for model load.
 Requires a local ONNX model for integration tests:
 
 ```bash
-make export-model    # pip installs build deps, exports e5-base to models/
-make test            # unit tests (no runtime needed)
+make export-model     # pip installs build deps (torch, transformers), exports e5-base to models/
+make test             # unit tests (no runtime needed)
 make test-integration # full integration tests (needs BAYLEAF_TEST_CACHE)
 make vet
-make build           # build platform tarball
+make build            # build platform tarball (caches downloads in ~/.bayleaf/build-cache/)
+make build-clean      # wipe build cache and rebuild from scratch
 ```
 
 Run integration tests against a local build:
